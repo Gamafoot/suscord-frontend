@@ -192,6 +192,7 @@ textarea {
 .nav-rail,
 .sidebar-panel,
 .chat-stage,
+.screen-share-shell,
 .call-panel {
   height: 100%;
   min-height: 0;
@@ -221,11 +222,25 @@ textarea {
 }
 
 .brand-badge {
+  border: 0;
   background: linear-gradient(135deg, var(--brand) 0%, var(--brand-2) 100%);
   color: #111;
   font-family: 'Sora', sans-serif;
   font-weight: 700;
   font-size: 1.25rem;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    filter 160ms ease;
+}
+
+.brand-badge:hover {
+  transform: translateY(-1px);
+  filter: saturate(1.05);
+}
+
+.brand-badge-active {
+  box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.18);
 }
 
 .nav-rail__button {
@@ -444,6 +459,12 @@ textarea {
   overflow: hidden;
 }
 
+.screen-share-shell {
+  grid-column: 2 / 4;
+  overflow: hidden;
+  padding: 1.5rem;
+}
+
 .chat-stage > .pane-empty {
   grid-row: 1 / -1;
   min-height: 0;
@@ -548,6 +569,92 @@ textarea {
   padding: 1.5rem;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+}
+
+.screen-share-stage {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 1rem;
+  background:
+    radial-gradient(circle at top right, rgba(255, 209, 102, 0.08), transparent 28%),
+    rgba(255, 255, 255, 0.015);
+}
+
+.screen-share-stage__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.screen-share-stage__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.screen-share-stage__actions .btn {
+  white-space: nowrap;
+}
+
+.screen-share-stage__title {
+  margin: 0;
+  font-size: clamp(1.3rem, 2vw, 1.7rem);
+}
+
+.screen-share-stage__frame {
+  position: relative;
+  min-height: 0;
+  border-radius: 24px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+    rgba(10, 14, 22, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.screen-share-stage__frame-fullscreen {
+  cursor: zoom-out;
+}
+
+.screen-share-stage__mount {
+  width: 100%;
+  height: 100%;
+  min-height: min(70vh, 720px);
+  display: grid;
+  place-items: center;
+}
+
+.screen-share-stage__media {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #090c13;
+}
+
+.screen-share-stage__floating-action {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 3;
+  border-radius: 999px;
+  background: rgba(7, 10, 16, 0.82);
+  backdrop-filter: blur(12px);
+}
+
+.screen-share-stage__floating-action:hover,
+.screen-share-stage__floating-action:focus {
+  background: rgba(12, 16, 24, 0.92);
+}
+
+.screen-share-shell-fullscreen {
+  padding: 1rem;
+  background: #06080d;
+  border: 0;
+  box-shadow: none;
 }
 
 .chat-stage__footer {
@@ -782,6 +889,11 @@ textarea {
   gap: 0.75rem;
 }
 
+.participant-row__controls {
+  display: grid;
+  gap: 0.7rem;
+}
+
 .participant-volume {
   display: grid;
   gap: 0.45rem;
@@ -813,6 +925,11 @@ textarea {
   border-radius: 999px;
   background: var(--brand-3);
   box-shadow: 0 0 0 6px rgba(88, 214, 198, 0.12);
+}
+
+.live-dot-active {
+  background: var(--brand-2);
+  box-shadow: 0 0 0 7px rgba(255, 209, 102, 0.18);
 }
 
 .modal-shell {
@@ -1435,6 +1552,10 @@ textarea {
   .call-panel {
     display: none;
   }
+
+  .screen-share-shell {
+    grid-column: 2 / 4;
+  }
 }
 
 @media (max-width: 900px) {
@@ -1459,9 +1580,15 @@ textarea {
 
   .sidebar-panel,
   .chat-stage,
+  .screen-share-shell,
   .call-panel {
     height: auto;
     min-height: auto;
+  }
+
+  .screen-share-shell {
+    grid-column: auto;
+    padding: 1rem;
   }
 
   .chat-stage__header {
@@ -1474,6 +1601,19 @@ textarea {
   }
 
   .chat-stage__actions > * {
+    flex: 1;
+  }
+
+  .screen-share-stage__header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .screen-share-stage__actions {
+    justify-content: stretch;
+  }
+
+  .screen-share-stage__actions > * {
     flex: 1;
   }
 

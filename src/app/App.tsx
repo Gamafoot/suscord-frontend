@@ -51,6 +51,23 @@ interface LivekitAudioEntry {
   participantIdentity?: string;
 }
 
+interface LivekitVideoTrack {
+  kind?: string;
+  sid?: string;
+  source?: string;
+  mediaStreamTrack?: MediaStreamTrack;
+  attach: () => HTMLMediaElement;
+  detach?: (element?: HTMLMediaElement) => HTMLMediaElement[] | void;
+}
+
+interface LivekitScreenEntry {
+  participantIdentity: string;
+  isLocal: boolean;
+  track: LivekitVideoTrack;
+}
+
+const SCREEN_SHARE_SOURCE = 'screen_share';
+
 export function App() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [loginBusy, setLoginBusy] = useState(false);
@@ -76,8 +93,15 @@ export function App() {
   const [callVolumes, setCallVolumes] = useState<Record<number, number>>({});
   const [callBusy, setCallBusy] = useState(false);
   const [muteBusy, setMuteBusy] = useState(false);
+  const [screenShareBusy, setScreenShareBusy] = useState(false);
   const [selfMuted, setSelfMuted] = useState(false);
   const [callError, setCallError] = useState<string | null>(null);
+  const [localParticipantIdentity, setLocalParticipantIdentity] = useState<string | null>(null);
+  const [screenShares, setScreenShares] = useState<Record<string, { isLocal: boolean; }>>({});
+  const [watchingScreenShareIdentity, setWatchingScreenShareIdentity] = useState<string | null>(null);
+  const [primaryPaneMode, setPrimaryPaneMode] = useState<'chat' | 'screen'>('chat');
+  const [screenShareFullscreen, setScreenShareFullscreen] = useState(false);
+  const [screenShareVersion, setScreenShareVersion] = useState(0);
   const [leaveChatBusy, setLeaveChatBusy] = useState(false);
   const [groupEditOpen, setGroupEditOpen] = useState(false);
   const [groupEditName, setGroupEditName] = useState('');
@@ -111,6 +135,11 @@ export function App() {
   const livekitAudioSinkRef = useRef<HTMLDivElement | null>(null);
   const livekitAudioEntriesRef = useRef(new Map<string, LivekitAudioEntry>());
   const livekitAudioContextRef = useRef<AudioContext | null>(null);
+  const livekitScreenEntriesRef = useRef(new Map<string, LivekitScreenEntry>());
+  const livekitScreenShellRef = useRef<HTMLElement | null>(null);
+  const livekitScreenStageRef = useRef<HTMLDivElement | null>(null);
+  const livekitScreenStageTrackRef = useRef<LivekitVideoTrack | null>(null);
+  const livekitScreenStageElementRef = useRef<HTMLMediaElement | null>(null);
   const chatBodyRef = useRef<HTMLElement | null>(null);
   const lastAutoScrolledChatRef = useRef<number | null>(null);
   const lastMessageCountRef = useRef(0);
@@ -169,6 +198,40 @@ export function App() {
     [chatDisplayById, currentUser?.id, selectedChat, selectedMembers],
   );
   const shouldShowCallPanel = Boolean(selectedChatId && selectedCallMembers.length);
+  const localScreenShareActive = useMemo(
+    () => Boolean(localParticipantIdentity && screenShares[localParticipantIdentity]),
+    [localParticipantIdentity, screenShares],
+  );
+  const isWatchingScreenShare = useMemo(
+    () =>
+      Boolean(
+        primaryPaneMode === 'screen' &&
+        selectedChat &&
+        activeCallChatId === selectedChat.id &&
+        watchingScreenShareIdentity &&
+        screenShares[watchingScreenShareIdentity],
+      ),
+    [activeCallChatId, primaryPaneMode, screenShares, selectedChat, watchingScreenShareIdentity],
+  );
+  const watchingScreenShareName = useMemo(() => {
+    if (!watchingScreenShareIdentity) {
+      return null;
+    }
+
+    if (watchingScreenShareIdentity === localParticipantIdentity) {
+      return resolvedCurrentUser?.username ?? 'Вы';
+    }
+
+    const participantId = Number(watchingScreenShareIdentity);
+    if (participantId > 0) {
+      const participant = selectedCallMembers.find((member) => member.id === participantId);
+      if (participant) {
+        return participant.username;
+      }
+    }
+
+    return `Участник ${watchingScreenShareIdentity}`;
+  }, [localParticipantIdentity, resolvedCurrentUser?.username, selectedCallMembers, watchingScreenShareIdentity]);
   const filteredChats = useMemo(() => {
     const query = chatSearch.trim().toLowerCase();
     if (!query) {
@@ -216,11 +279,123 @@ export function App() {
     livekitAudioContextRef.current = null;
   }, []);
 
+  const clearLivekitScreenStage = useCallback(() => {
+    livekitScreenStageTrackRef.current?.detach?.(livekitScreenStageElementRef.current ?? undefined);
+    livekitScreenStageElementRef.current?.pause();
+    livekitScreenStageElementRef.current?.remove();
+    livekitScreenStageTrackRef.current = null;
+    livekitScreenStageElementRef.current = null;
+    if (livekitScreenStageRef.current) {
+      livekitScreenStageRef.current.innerHTML = '';
+    }
+  }, []);
+
+  const registerScreenShare = useCallback((participantIdentity: string, isLocal: boolean, track?: LivekitVideoTrack) => {
+    if (!participantIdentity) {
+      return;
+    }
+
+    if (track) {
+      livekitScreenEntriesRef.current.forEach((entry, key) => {
+        if (entry.participantIdentity === participantIdentity && entry.track !== track) {
+          livekitScreenEntriesRef.current.delete(key);
+        }
+      });
+      livekitScreenEntriesRef.current.set(track.sid ?? `${participantIdentity}-${SCREEN_SHARE_SOURCE}`, {
+        participantIdentity,
+        isLocal,
+        track,
+      });
+    }
+
+    setScreenShares((current) => {
+      if (current[participantIdentity]?.isLocal === isLocal) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [participantIdentity]: { isLocal },
+      };
+    });
+    setScreenShareVersion((current) => current + 1);
+  }, []);
+
+  const unregisterScreenShare = useCallback(
+    (participantIdentity: string) => {
+      if (!participantIdentity) {
+        return;
+      }
+
+      let removed = false;
+      livekitScreenEntriesRef.current.forEach((entry, key) => {
+        if (entry.participantIdentity === participantIdentity) {
+          removed = true;
+          livekitScreenEntriesRef.current.delete(key);
+        }
+      });
+
+      if (watchingScreenShareIdentity === participantIdentity) {
+        clearLivekitScreenStage();
+      }
+
+      setScreenShares((current) => {
+        if (!(participantIdentity in current)) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[participantIdentity];
+        return next;
+      });
+
+      if (removed || watchingScreenShareIdentity === participantIdentity) {
+        setScreenShareVersion((current) => current + 1);
+      }
+    },
+    [clearLivekitScreenStage, watchingScreenShareIdentity],
+  );
+
+  const clearLivekitScreenShares = useCallback(() => {
+    clearLivekitScreenStage();
+    livekitScreenEntriesRef.current.clear();
+    setScreenShares({});
+    setWatchingScreenShareIdentity(null);
+    setPrimaryPaneMode('chat');
+    setLocalParticipantIdentity(null);
+    setScreenShareBusy(false);
+    setScreenShareVersion((current) => current + 1);
+  }, [clearLivekitScreenStage]);
+
   const disconnectLivekit = useCallback(() => {
     livekitRoomRef.current?.disconnect();
     livekitRoomRef.current = null;
     clearLivekitAudio();
-  }, [clearLivekitAudio]);
+    clearLivekitScreenShares();
+  }, [clearLivekitAudio, clearLivekitScreenShares]);
+
+  const sendSocketEvent = useCallback((payload: SocketEnvelope) => {
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket is not connected');
+    }
+    socket.send(JSON.stringify(payload));
+  }, []);
+
+  const sendDemoSocketEvent = useCallback(
+    (eventName: 'call.demo.run' | 'call.demo.stop', chatId: number) => {
+      if (!chatId) {
+        return;
+      }
+
+      try {
+        sendSocketEvent({ event: eventName, chat_id: chatId, data: {} });
+      } catch (error) {
+        setCallError(error instanceof Error ? error.message : 'Не удалось отправить событие демонстрации');
+      }
+    },
+    [sendSocketEvent],
+  );
 
   const loadCurrentUser = useCallback(async () => {
     try {
@@ -292,7 +467,7 @@ export function App() {
     }
   }, [mergeMembersPreservingAuthors]);
 
-  const loadCallMembers = useCallback(async (chatId: number) => {
+  const loadCallMembers = useCallback(async (chatId: number, options?: { silent?: boolean; }) => {
     try {
       const members = await api.currentCallMembers();
       setCallMembersByChat((current) => ({
@@ -301,7 +476,9 @@ export function App() {
       }));
       return members;
     } catch (error) {
-      setCallError(error instanceof Error ? error.message : 'Не удалось загрузить участников комнаты');
+      if (!options?.silent) {
+        setCallError(error instanceof Error ? error.message : 'Не удалось загрузить участников комнаты');
+      }
       return [];
     }
   }, []);
@@ -373,24 +550,75 @@ export function App() {
           track.detach().forEach((element) => element.remove());
         };
 
-        room.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
-          void attachAudioTrack(track, participant.identity);
+        const attachScreenTrack = (
+          track: LivekitVideoTrack | undefined,
+          participantIdentity?: string,
+          isLocal = false,
+          source?: string,
+        ) => {
+          if (!track || !participantIdentity) {
+            return;
+          }
+
+          const resolvedSource = source ?? track.source;
+          if (track.kind !== Track.Kind.Video || resolvedSource !== Track.Source.ScreenShare) {
+            return;
+          }
+
+          registerScreenShare(participantIdentity, isLocal, track);
+        };
+
+        room.on(RoomEvent.TrackPublished, (publication, participant) => {
+          if (publication.source === Track.Source.ScreenShare) {
+            registerScreenShare(participant.identity, false);
+          }
         });
-        room.on(RoomEvent.TrackUnsubscribed, (track) => {
+        room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+          void attachAudioTrack(track, participant.identity);
+          attachScreenTrack(track as LivekitVideoTrack, participant.identity, false, publication.source);
+        });
+        room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
+          if (publication.source === Track.Source.ScreenShare) {
+            unregisterScreenShare(participant.identity);
+            return;
+          }
+
           detachAudioTrack(track);
+        });
+        room.on(RoomEvent.TrackUnpublished, (publication, participant) => {
+          if (publication.source === Track.Source.ScreenShare) {
+            unregisterScreenShare(participant.identity);
+          }
+        });
+        room.on(RoomEvent.LocalTrackPublished, (publication, participant) => {
+          if (publication.source === Track.Source.ScreenShare) {
+            attachScreenTrack(publication.track as LivekitVideoTrack | undefined, participant.identity, true, publication.source);
+            sendDemoSocketEvent('call.demo.run', chatId);
+          }
+        });
+        room.on(RoomEvent.LocalTrackUnpublished, (publication, participant) => {
+          if (publication.source === Track.Source.ScreenShare) {
+            unregisterScreenShare(participant.identity);
+            sendDemoSocketEvent('call.demo.stop', chatId);
+          }
         });
         room.on(RoomEvent.Disconnected, () => {
           clearLivekitAudio();
+          clearLivekitScreenShares();
         });
 
         livekitRoomRef.current = room;
         await room.connect(LIVEKIT_URL, token);
+        setLocalParticipantIdentity(room.localParticipant.identity);
         await room.localParticipant.setMicrophoneEnabled(true, AUDIO_CAPTURE_OPTIONS);
         setSelfMuted(false);
         room.remoteParticipants.forEach((participant) => {
           participant.trackPublications.forEach((publication) => {
             if (publication.track && publication.track.kind === Track.Kind.Audio) {
               void attachAudioTrack(publication.track, participant.identity);
+            }
+            if (publication.source === Track.Source.ScreenShare) {
+              attachScreenTrack(publication.track as LivekitVideoTrack | undefined, participant.identity, false, publication.source);
             }
           });
         });
@@ -399,31 +627,32 @@ export function App() {
         setCallError(error instanceof Error ? error.message : 'LiveKit connection failed');
       }
     },
-    [applyEntryVolume, callVolumes, clearLivekitAudio, disconnectLivekit],
+    [
+      applyEntryVolume,
+      callVolumes,
+      clearLivekitAudio,
+      clearLivekitScreenShares,
+      disconnectLivekit,
+      registerScreenShare,
+      sendDemoSocketEvent,
+      unregisterScreenShare,
+    ],
   );
 
   const refreshCallState = useCallback(
     async (chatId: number) => {
       setActiveCallChatId(chatId);
-      const members = await loadCallMembers(chatId);
       if (currentUser) {
         setCallMembersByChat((state) => ({
           ...state,
-          [chatId]: upsertUser(members.length ? members : state[chatId] ?? [], currentUser),
+          [chatId]: upsertUser(state[chatId] ?? [], currentUser),
         }));
       }
       await connectLivekit(chatId);
+      void loadCallMembers(chatId, { silent: true });
     },
     [connectLivekit, currentUser, loadCallMembers],
   );
-
-  const sendSocketEvent = useCallback((payload: SocketEnvelope) => {
-    const socket = wsRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not connected');
-    }
-    socket.send(JSON.stringify(payload));
-  }, []);
 
   const dismissInvite = useCallback((inviteId: string) => {
     setInvites((current) => current.filter((invite) => invite.id !== inviteId));
@@ -610,6 +839,24 @@ export function App() {
           }
           break;
         }
+        case 'call.demo.run': {
+          if (!chatId) {
+            break;
+          }
+
+          const userId = Number(data.user_id ?? data.id ?? 0);
+          if (userId > 0) {
+            registerScreenShare(String(userId), false);
+          }
+          break;
+        }
+        case 'call.demo.stop': {
+          const userId = Number(data.user_id ?? data.id ?? 0);
+          if (userId > 0) {
+            unregisterScreenShare(String(userId));
+          }
+          break;
+        }
         case 'call.leave':
         case 'chat.leave': {
           if (!callLeaveChatId) {
@@ -637,7 +884,7 @@ export function App() {
           break;
       }
     },
-    [activeCallChatId, loadCallMembers, loadChatContext, loadChats],
+    [activeCallChatId, loadCallMembers, loadChatContext, loadChats, registerScreenShare, unregisterScreenShare],
   );
 
   socketHandlerRef.current = handleSocketEvent;
@@ -673,6 +920,76 @@ export function App() {
     pushErrorToast(callError);
     setCallError(null);
   }, [callError, pushErrorToast]);
+
+  useEffect(() => {
+    if (watchingScreenShareIdentity && !screenShares[watchingScreenShareIdentity]) {
+      setWatchingScreenShareIdentity(null);
+      setPrimaryPaneMode('chat');
+    }
+  }, [screenShares, watchingScreenShareIdentity]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const shell = livekitScreenShellRef.current;
+      setScreenShareFullscreen(Boolean(shell && document.fullscreenElement === shell));
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    handleFullscreenChange();
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isWatchingScreenShare) {
+      return;
+    }
+
+    if (document.fullscreenElement === livekitScreenShellRef.current) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
+  }, [isWatchingScreenShare]);
+
+  useEffect(() => {
+    clearLivekitScreenStage();
+
+    if (!isWatchingScreenShare || !watchingScreenShareIdentity) {
+      return;
+    }
+
+    const entry = Array.from(livekitScreenEntriesRef.current.values()).find(
+      (item) => item.participantIdentity === watchingScreenShareIdentity,
+    );
+    const stage = livekitScreenStageRef.current;
+    if (!entry || !stage) {
+      return;
+    }
+
+    const element = entry.track.attach();
+    element.autoplay = true;
+    element.classList.add('screen-share-stage__media');
+
+    if (element instanceof HTMLVideoElement) {
+      element.playsInline = true;
+      element.muted = entry.isLocal;
+    }
+
+    stage.appendChild(element);
+    livekitScreenStageTrackRef.current = entry.track;
+    livekitScreenStageElementRef.current = element;
+
+    return () => {
+      entry.track.detach?.(element);
+      element.pause();
+      element.remove();
+      if (livekitScreenStageTrackRef.current === entry.track) {
+        livekitScreenStageTrackRef.current = null;
+        livekitScreenStageElementRef.current = null;
+      }
+    };
+  }, [clearLivekitScreenStage, isWatchingScreenShare, screenShareVersion, watchingScreenShareIdentity]);
 
   useEffect(() => {
     void loadCurrentUser();
@@ -1094,11 +1411,73 @@ export function App() {
     }
   }
 
+  async function toggleScreenShare() {
+    const room = livekitRoomRef.current;
+    if (!room) {
+      setCallError('Сначала подключитесь к комнате');
+      return;
+    }
+
+    const nextEnabled = !localScreenShareActive;
+    setScreenShareBusy(true);
+    setCallError(null);
+    try {
+      const { Track } = await import('livekit-client');
+      await room.localParticipant.setScreenShareEnabled(nextEnabled, {
+        audio: true,
+      });
+
+      if (!nextEnabled) {
+        if (room.localParticipant.identity) {
+          unregisterScreenShare(room.localParticipant.identity);
+        }
+        if (watchingScreenShareIdentity === room.localParticipant.identity) {
+          setPrimaryPaneMode('chat');
+        }
+      } else {
+        const publication = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+        if (publication?.track && room.localParticipant.identity) {
+          registerScreenShare(
+            room.localParticipant.identity,
+            true,
+            publication.track as LivekitVideoTrack,
+          );
+        }
+      }
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : 'Не удалось запустить демонстрацию экрана');
+    } finally {
+      setScreenShareBusy(false);
+    }
+  }
+
   function handleCallVolumeChange(userId: number, nextVolume: number) {
     setCallVolumes((current) => ({
       ...current,
       [userId]: Math.max(0, Math.min(nextVolume, 200)),
     }));
+  }
+
+  function leaveScreenShareView() {
+    setPrimaryPaneMode('chat');
+  }
+
+  async function toggleScreenShareFullscreen() {
+    const shell = livekitScreenShellRef.current;
+    if (!shell) {
+      return;
+    }
+
+    try {
+      if (document.fullscreenElement === shell) {
+        await document.exitFullscreen();
+        return;
+      }
+
+      await shell.requestFullscreen();
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : 'Не удалось переключить полноэкранный режим');
+    }
   }
 
   async function handleLeaveChat() {
@@ -1380,10 +1759,22 @@ export function App() {
   }
 
   const chatLayout = (
-    <div className={`app-shell ${shouldShowCallPanel ? 'app-shell-call' : ''}`}>
+    <div className={`app-shell ${shouldShowCallPanel ? 'app-shell-call' : ''} ${isWatchingScreenShare ? 'app-shell-screen' : ''}`}>
       <aside className="nav-rail">
-        <div className="brand-badge">S</div>
-        <button className="nav-rail__button nav-rail__button-active">
+        <button
+          className={`brand-badge ${primaryPaneMode === 'chat' ? 'brand-badge-active' : ''}`}
+          type="button"
+          title="Вернуться в чат"
+          onClick={() => setPrimaryPaneMode('chat')}
+        >
+          S
+        </button>
+        <button
+          className={`nav-rail__button ${primaryPaneMode === 'chat' ? 'nav-rail__button-active' : ''}`}
+          type="button"
+          title="Чат"
+          onClick={() => setPrimaryPaneMode('chat')}
+        >
           <i className="bi bi-chat-square-text-fill" />
         </button>
         <button
@@ -1414,112 +1805,162 @@ export function App() {
         ) : null}
       </aside>
 
-      <ChatSidebar
-        chats={filteredChats}
-        displayByChatId={chatDisplayById}
-        memberCounts={Object.fromEntries(Object.entries(membersByChat).map(([chatId, members]) => [Number(chatId), members.length]))}
-        selectedChatId={selectedChatId}
-        chatSearch={chatSearch}
-        activeCallChatId={activeCallChatId}
-        onChatSearchChange={setChatSearch}
-        onSelectChat={setSelectedChatId}
-      />
+      {!isWatchingScreenShare ? (
+        <ChatSidebar
+          chats={filteredChats}
+          displayByChatId={chatDisplayById}
+          memberCounts={Object.fromEntries(Object.entries(membersByChat).map(([chatId, members]) => [Number(chatId), members.length]))}
+          selectedChatId={selectedChatId}
+          chatSearch={chatSearch}
+          activeCallChatId={activeCallChatId}
+          onChatSearchChange={setChatSearch}
+          onSelectChat={setSelectedChatId}
+        />
+      ) : null}
 
-      <main className="chat-stage">
-        {selectedChat ? (
-          <>
-            <header className="chat-stage__header">
-              {canEditSelectedGroup ? (
-                <button className="chat-edit-trigger" type="button" onClick={openGroupEdit}>
-                  <Avatar name={selectedChat.name} url={selectedChat.avatar_url} accent="warm" />
-                  <div className="chat-edit-trigger__content">
-                    <h1 className="chat-stage__title">{selectedChat.name}</h1>
-                    <p className="chat-stage__subtitle mb-0">
-                      {summarizeChat(selectedChat, selectedMembers)}
-                    </p>
-                  </div>
-                  <span className="chat-edit-trigger__icon">
-                    <i className="bi bi-pencil-fill" />
-                  </span>
+      {isWatchingScreenShare ? (
+        <main ref={livekitScreenShellRef} className={`screen-share-shell ${screenShareFullscreen ? 'screen-share-shell-fullscreen' : ''}`}>
+          <section className="screen-share-stage">
+            <div className="screen-share-stage__header">
+              <div>
+                <p className="eyebrow mb-2">Демонстрация экрана</p>
+                <h2 className="screen-share-stage__title mb-1">{watchingScreenShareName ?? 'Трансляция'}</h2>
+                <p className="text-secondary mb-0 small">
+                  Демка занимает область списка чатов и чата. Возврат и повторный вход доступны через левую панель.
+                </p>
+              </div>
+              <div className="screen-share-stage__actions">
+                <span className="status-pill status-pill-online">В эфире</span>
+                <button className="btn btn-outline-light" type="button" onClick={() => void toggleScreenShareFullscreen()}>
+                  <i className={`bi ${screenShareFullscreen ? 'bi-fullscreen-exit' : 'bi-arrows-fullscreen'} me-2`} />
+                  {screenShareFullscreen ? 'Свернуть' : 'Во весь экран'}
                 </button>
-              ) : (
-                <div className="d-flex gap-3 align-items-center">
-                  <Avatar name={selectedChatDisplay?.name ?? selectedChat.name} url={selectedChatDisplay?.avatarUrl ?? selectedChat.avatar_url} accent="brand" />
-                  <div>
-                    <h1 className="chat-stage__title">{selectedChatDisplay?.name ?? selectedChat.name}</h1>
-                    <p className="chat-stage__subtitle mb-0">
-                      {summarizeChat(selectedChat, selectedMembers)}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              <div className="chat-stage__actions">
-                {selectedChat.type === 'group' ? (
-                  <button className="btn btn-outline-light" onClick={() => setGroupInviteOpen(true)}>
-                    <i className="bi bi-person-plus-fill me-2" />
-                    Пригласить
-                  </button>
-                ) : null}
+                <button className="btn btn-outline-danger" type="button" onClick={leaveScreenShareView}>
+                  <i className="bi bi-box-arrow-left me-2" />
+                  Выйти из демки
+                </button>
+              </div>
+            </div>
+            <div
+              className={`screen-share-stage__frame ${screenShareFullscreen ? 'screen-share-stage__frame-fullscreen' : ''}`}
+              onClick={screenShareFullscreen ? () => void toggleScreenShareFullscreen() : undefined}
+            >
+              {screenShareFullscreen ? (
                 <button
-                  className="btn btn-outline-light"
-                  onClick={() => void handleLeaveChat()}
-                  disabled={leaveChatBusy}
+                  className="btn btn-dark screen-share-stage__floating-action"
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void toggleScreenShareFullscreen();
+                  }}
                 >
-                  <i className="bi bi-box-arrow-right me-2" />
-                  {leaveChatBusy ? 'Выходим...' : 'Покинуть чат'}
+                  <i className="bi bi-fullscreen-exit me-2" />
+                  Свернуть
                 </button>
-                {activeCallChatId === selectedChat.id ? (
-                  <button className="btn btn-outline-danger" onClick={() => void leaveCall()} disabled={callBusy || muteBusy}>
-                    <i className="bi bi-telephone-x-fill me-2" />
-                    Выйти из звонка
+              ) : null}
+              <div ref={livekitScreenStageRef} className="screen-share-stage__mount" />
+            </div>
+          </section>
+        </main>
+      ) : (
+        <main className="chat-stage">
+          {selectedChat ? (
+            <>
+              <header className="chat-stage__header">
+                {canEditSelectedGroup ? (
+                  <button className="chat-edit-trigger" type="button" onClick={openGroupEdit}>
+                    <Avatar name={selectedChat.name} url={selectedChat.avatar_url} accent="warm" />
+                    <div className="chat-edit-trigger__content">
+                      <h1 className="chat-stage__title">{selectedChat.name}</h1>
+                      <p className="chat-stage__subtitle mb-0">
+                        {summarizeChat(selectedChat, selectedMembers)}
+                      </p>
+                    </div>
+                    <span className="chat-edit-trigger__icon">
+                      <i className="bi bi-pencil-fill" />
+                    </span>
                   </button>
                 ) : (
-                  <button className="btn btn-brand" onClick={() => void startCall(selectedChat.id)} disabled={callBusy || !wsOnline}>
-                    <i className="bi bi-telephone-fill me-2" />
-                    Позвонить
-                  </button>
+                  <div className="d-flex gap-3 align-items-center">
+                    <Avatar name={selectedChatDisplay?.name ?? selectedChat.name} url={selectedChatDisplay?.avatarUrl ?? selectedChat.avatar_url} accent="brand" />
+                    <div>
+                      <h1 className="chat-stage__title">{selectedChatDisplay?.name ?? selectedChat.name}</h1>
+                      <p className="chat-stage__subtitle mb-0">
+                        {summarizeChat(selectedChat, selectedMembers)}
+                      </p>
+                    </div>
+                  </div>
                 )}
-              </div>
-            </header>
 
-            <section className="chat-stage__body" ref={chatBodyRef} onScroll={handleChatBodyScroll}>
-              <MessageList
-                chat={selectedChat}
-                currentUserId={currentUser?.id ?? 0}
-                messages={selectedMessages}
-                members={selectedMembers}
-                loading={loadingChatId === selectedChat.id}
-                editingMessageId={editingMessageId}
-                editingText={editingMessageText}
-                messageActionBusy={messageActionBusy}
-                onStartEdit={handleStartEditMessage}
-                onEditTextChange={setEditingMessageText}
-                onCancelEdit={handleCancelEditMessage}
-                onSaveEdit={handleSaveEditMessage}
-                onDeleteMessage={handleDeleteMessage}
-              />
-            </section>
+                <div className="chat-stage__actions">
+                  {selectedChat.type === 'group' ? (
+                    <button className="btn btn-outline-light" onClick={() => setGroupInviteOpen(true)}>
+                      <i className="bi bi-person-plus-fill me-2" />
+                      Пригласить
+                    </button>
+                  ) : null}
+                  <button
+                    className="btn btn-outline-light"
+                    onClick={() => void handleLeaveChat()}
+                    disabled={leaveChatBusy}
+                  >
+                    <i className="bi bi-box-arrow-right me-2" />
+                    {leaveChatBusy ? 'Выходим...' : 'Покинуть чат'}
+                  </button>
+                  {activeCallChatId === selectedChat.id ? (
+                    <button className="btn btn-outline-danger" onClick={() => void leaveCall()} disabled={callBusy || muteBusy}>
+                      <i className="bi bi-telephone-x-fill me-2" />
+                      Выйти из звонка
+                    </button>
+                  ) : (
+                    <button className="btn btn-brand" onClick={() => void startCall(selectedChat.id)} disabled={callBusy || !wsOnline}>
+                      <i className="bi bi-telephone-fill me-2" />
+                      Позвонить
+                    </button>
+                  )}
+                </div>
+              </header>
 
-            <footer className="chat-stage__footer">
-              <MessageComposer
-                disabled={loadingChatId === selectedChat.id}
-                text={composerText}
-                files={composerFiles}
-                onTextChange={setComposerText}
-                onFilesChange={setComposerFiles}
-                onSubmit={handleSendMessage}
-              />
-            </footer>
-          </>
-        ) : (
-          <div className="pane-empty">
-            <i className="bi bi-stars display-4 text-warning" />
-            <h3>Создайте чат или откройте существующий</h3>
-            <p>Используйте левую панель, чтобы начать личную или групповую переписку.</p>
-          </div>
-        )}
-      </main>
+              <>
+                <section className="chat-stage__body" ref={chatBodyRef} onScroll={handleChatBodyScroll}>
+                  <MessageList
+                    chat={selectedChat}
+                    currentUserId={currentUser?.id ?? 0}
+                    messages={selectedMessages}
+                    members={selectedMembers}
+                    loading={loadingChatId === selectedChat.id}
+                    editingMessageId={editingMessageId}
+                    editingText={editingMessageText}
+                    messageActionBusy={messageActionBusy}
+                    onStartEdit={handleStartEditMessage}
+                    onEditTextChange={setEditingMessageText}
+                    onCancelEdit={handleCancelEditMessage}
+                    onSaveEdit={handleSaveEditMessage}
+                    onDeleteMessage={handleDeleteMessage}
+                  />
+                </section>
+
+                <footer className="chat-stage__footer">
+                  <MessageComposer
+                    disabled={loadingChatId === selectedChat.id}
+                    text={composerText}
+                    files={composerFiles}
+                    onTextChange={setComposerText}
+                    onFilesChange={setComposerFiles}
+                    onSubmit={handleSendMessage}
+                  />
+                </footer>
+              </>
+            </>
+          ) : (
+            <div className="pane-empty">
+              <i className="bi bi-stars display-4 text-warning" />
+              <h3>Создайте чат или откройте существующий</h3>
+              <p>Используйте левую панель, чтобы начать личную или групповую переписку.</p>
+            </div>
+          )}
+        </main>
+      )}
 
       {shouldShowCallPanel && selectedChat ? (
         <aside className="call-panel">
@@ -1534,71 +1975,116 @@ export function App() {
           </div>
 
           <div className="call-status card-shell mb-3">
-            <div className="d-flex justify-content-between align-items-center">
-              <span>Аудиосоединение</span>
+            <div className="d-flex justify-content-between align-items-center gap-3">
+              <span>Демонстрация экрана</span>
               <span className={`status-pill ${LIVEKIT_URL ? 'status-pill-online' : 'status-pill-offline'}`}>
-                {LIVEKIT_URL ? 'LiveKit готов' : 'Только интерфейс'}
+                {localScreenShareActive ? 'Идёт трансляция' : LIVEKIT_URL ? 'Готово' : 'Недоступно'}
               </span>
             </div>
+            <button
+              className={`btn mt-3 w-100 ${localScreenShareActive ? 'btn-outline-danger' : 'btn-brand'}`}
+              type="button"
+              onClick={() => void toggleScreenShare()}
+              disabled={screenShareBusy || activeCallChatId !== selectedChat.id || !LIVEKIT_URL}
+            >
+              <i className={`bi ${localScreenShareActive ? 'bi-display-fill' : 'bi-cast'} me-2`} />
+              {screenShareBusy
+                ? 'Открываем выбор окна...'
+                : localScreenShareActive
+                  ? 'Остановить демку'
+                  : 'Включить демку'}
+            </button>
             <small className="text-secondary d-block mt-2">
               {LIVEKIT_URL
                 ? activeCallChatId === selectedChat.id
-                  ? 'Клиент подключён к LiveKit для этой комнаты.'
-                  : 'Войдите в комнату, чтобы подключить микрофон.'
+                  ? localScreenShareActive
+                    ? 'После остановки кнопка "Смотреть" исчезнет у остальных участников.'
+                    : 'Браузер откроет системное окно выбора экрана или приложения.'
+                  : 'Сначала войдите в звонок этой комнаты, затем можно включить демку.'
                 : 'Укажите VITE_LIVEKIT_URL, чтобы включить аудиосоединение.'}
             </small>
           </div>
 
           <div className="participant-list">
-            {selectedCallMembers.map((member) => (
-              <div key={member.id} className="participant-row">
-                <div className="participant-row__identity">
-                  <div className="d-flex align-items-center gap-3">
-                    <Avatar name={member.username} url={member.avatar_url} size="sm" accent="warm" />
-                    <div>
-                      <strong className="d-block">{member.username}</strong>
-                      <small className="text-secondary">
-                        {member.id === currentUser?.id
-                          ? activeCallChatId === selectedChat.id
-                            ? 'Вы'
-                            : 'Ожидает'
-                          : activeCallChatId === selectedChat.id
-                            ? 'В комнате'
-                            : 'Ожидает в комнате'}
-                      </small>
-                    </div>
-                  </div>
-                  {activeCallChatId === selectedChat.id && member.id === currentUser?.id ? (
-                    <button
-                      className={`btn btn-sm ${selfMuted ? 'btn-outline-warning' : 'btn-outline-light'} align-self-start`}
-                      onClick={() => void toggleSelfMute()}
-                      disabled={muteBusy}
-                    >
-                      <i className={`bi ${selfMuted ? 'bi-mic-mute-fill' : 'bi-mic-fill'} me-2`} />
-                      {muteBusy ? 'Обновляем...' : selfMuted ? 'Включить микрофон' : 'Выключить микрофон'}
-                    </button>
-                  ) : activeCallChatId === selectedChat.id ? (
-                    <label className="participant-volume" htmlFor={`participant-volume-${member.id}`}>
-                      <div className="participant-volume__meta">
-                        <span>Громкость</span>
-                        <strong>{callVolumes[member.id] ?? DEFAULT_REMOTE_VOLUME}%</strong>
+            {selectedCallMembers.map((member) => {
+              const memberIdentity =
+                member.id === currentUser?.id && localParticipantIdentity
+                  ? localParticipantIdentity
+                  : String(member.id);
+              const memberHasScreenShare = Boolean(screenShares[memberIdentity]);
+              const isWatchingMember = watchingScreenShareIdentity === memberIdentity;
+
+              return (
+                <div key={member.id} className="participant-row">
+                  <div className="participant-row__identity">
+                    <div className="d-flex align-items-center gap-3">
+                      <Avatar name={member.username} url={member.avatar_url} size="sm" accent="warm" />
+                      <div>
+                        <strong className="d-block">{member.username}</strong>
+                        <small className="text-secondary">
+                          {member.id === currentUser?.id
+                            ? activeCallChatId === selectedChat.id
+                              ? memberHasScreenShare
+                                ? 'Вы показываете экран'
+                                : 'Вы'
+                              : 'Ожидает'
+                            : activeCallChatId === selectedChat.id
+                              ? memberHasScreenShare
+                                ? 'Показывает экран'
+                                : 'В комнате'
+                              : 'Ожидает в комнате'}
+                        </small>
                       </div>
-                      <input
-                        id={`participant-volume-${member.id}`}
-                        className="participant-volume__slider"
-                        type="range"
-                        min={0}
-                        max={200}
-                        step={1}
-                        value={callVolumes[member.id] ?? DEFAULT_REMOTE_VOLUME}
-                        onChange={(event) => handleCallVolumeChange(member.id, Number(event.target.value))}
-                      />
-                    </label>
-                  ) : null}
+                    </div>
+                    {activeCallChatId === selectedChat.id ? (
+                      <div className="participant-row__controls">
+                        {member.id === currentUser?.id ? (
+                          <button
+                            className={`btn btn-sm ${selfMuted ? 'btn-outline-warning' : 'btn-outline-light'} align-self-start`}
+                            onClick={() => void toggleSelfMute()}
+                            disabled={muteBusy}
+                          >
+                            <i className={`bi ${selfMuted ? 'bi-mic-mute-fill' : 'bi-mic-fill'} me-2`} />
+                            {muteBusy ? 'Обновляем...' : selfMuted ? 'Включить микрофон' : 'Выключить микрофон'}
+                          </button>
+                        ) : (
+                          <label className="participant-volume" htmlFor={`participant-volume-${member.id}`}>
+                            <div className="participant-volume__meta">
+                              <span>Громкость</span>
+                              <strong>{callVolumes[member.id] ?? DEFAULT_REMOTE_VOLUME}%</strong>
+                            </div>
+                            <input
+                              id={`participant-volume-${member.id}`}
+                              className="participant-volume__slider"
+                              type="range"
+                              min={0}
+                              max={200}
+                              step={1}
+                              value={callVolumes[member.id] ?? DEFAULT_REMOTE_VOLUME}
+                              onChange={(event) => handleCallVolumeChange(member.id, Number(event.target.value))}
+                            />
+                          </label>
+                        )}
+                        {memberHasScreenShare ? (
+                          <button
+                            className={`btn btn-sm ${isWatchingMember ? 'btn-brand' : 'btn-outline-light'}`}
+                            type="button"
+                            onClick={() => {
+                              setWatchingScreenShareIdentity(memberIdentity);
+                              setPrimaryPaneMode('screen');
+                            }}
+                          >
+                            <i className="bi bi-play-btn-fill me-2" />
+                            {isWatchingMember ? 'Смотрю' : 'Смотреть'}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  <span className={`live-dot ${memberHasScreenShare ? 'live-dot-active' : ''}`} />
                 </div>
-                <span className="live-dot" />
-              </div>
-            ))}
+              );
+            })}
             {!selectedCallMembers.length ? <div className="pane-empty pane-empty-compact">Пока никто не вошёл</div> : null}
           </div>
         </aside>
