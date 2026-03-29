@@ -763,16 +763,17 @@ export function App() {
       }
 
       const data = asRecord(event.data);
-      const chatId = Number(data.chat_id ?? event.chat_id ?? 0) || null;
+      const eventRecord = asRecord(event);
+      const chatId = Number(data.chat_id ?? data.ChatID ?? event.chat_id ?? eventRecord.ChatID ?? 0) || null;
       const callJoinChatId =
-        Number(data.chat_id ?? event.chat_id ?? selectedChatId ?? activeCallChatId ?? 0) || null;
-      const callLeaveChatId = Number(data.chat_id ?? event.chat_id ?? 0) || null;
+        Number(data.chat_id ?? data.ChatID ?? event.chat_id ?? eventRecord.ChatID ?? selectedChatId ?? activeCallChatId ?? 0) || null;
+      const callLeaveChatId = Number(data.chat_id ?? data.ChatID ?? event.chat_id ?? eventRecord.ChatID ?? 0) || null;
 
       switch (event.event) {
         case 'chat.message.created': {
           const message = normalizeMessage({
             ...data,
-            chat_id: data.chat_id ?? event.chat_id,
+            chat_id: data.chat_id ?? data.ChatID ?? event.chat_id ?? eventRecord.ChatID,
           });
           if (!message.chat_id) {
             break;
@@ -786,7 +787,7 @@ export function App() {
         case 'chat.message.updated': {
           const message = normalizeMessage({
             ...data,
-            chat_id: data.chat_id ?? event.chat_id,
+            chat_id: data.chat_id ?? data.ChatID ?? event.chat_id ?? eventRecord.ChatID,
           });
           if (!message.chat_id) {
             break;
@@ -798,7 +799,7 @@ export function App() {
           break;
         }
         case 'chat.message.deleted': {
-          const messageId = Number(data.id ?? data.message_id ?? 0);
+          const messageId = Number(data.id ?? data.message_id ?? data.MessageID ?? 0);
           if (!messageId || !chatId) {
             break;
           }
@@ -869,14 +870,14 @@ export function App() {
             break;
           }
 
-          const userId = Number(data.user_id ?? data.id ?? 0);
+          const userId = Number(data.user_id ?? data.UserID ?? data.id ?? 0);
           if (userId > 0) {
             registerScreenShare(String(userId), false);
           }
           break;
         }
         case 'call.demo.stop': {
-          const userId = Number(data.user_id ?? data.id ?? 0);
+          const userId = Number(data.user_id ?? data.UserID ?? data.id ?? 0);
           if (userId > 0) {
             unregisterScreenShare(String(userId));
           }
@@ -888,7 +889,7 @@ export function App() {
             break;
           }
 
-          const userId = Number(data.user_id ?? data.client_id ?? data.id ?? 0);
+          const userId = Number(data.user_id ?? data.UserID ?? data.client_id ?? data.id ?? 0);
           if (userId > 0) {
             setCallMembersByChat((current) => ({
               ...current,
