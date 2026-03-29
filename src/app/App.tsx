@@ -161,6 +161,20 @@ export function App() {
     () => (selectedChatId ? callMembersByChat[selectedChatId] ?? [] : []),
     [callMembersByChat, selectedChatId],
   );
+  const waitingCallCountsByChat = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(callMembersByChat).map(([chatId, members]) => [
+          Number(chatId),
+          members.filter((member) => member.id !== currentUser?.id).length,
+        ]),
+      ),
+    [callMembersByChat, currentUser?.id],
+  );
+  const selectedRemoteCallMembers = useMemo(
+    () => selectedCallMembers.filter((member) => member.id !== currentUser?.id),
+    [currentUser?.id, selectedCallMembers],
+  );
   const resolvedCurrentUser = useMemo(() => {
     if (!currentUser) {
       return null;
@@ -197,7 +211,11 @@ export function App() {
     () => (selectedChat ? chatDisplayById[selectedChat.id] ?? getChatDisplay(selectedChat, selectedMembers, currentUser?.id) : null),
     [chatDisplayById, currentUser?.id, selectedChat, selectedMembers],
   );
-  const shouldShowCallPanel = Boolean(selectedChatId && selectedCallMembers.length);
+  const shouldShowCallPanel = Boolean(
+    selectedChatId &&
+    (activeCallChatId === selectedChatId || selectedRemoteCallMembers.length > 0),
+  );
+  const selectedWaitingCallCount = selectedChatId ? waitingCallCountsByChat[selectedChatId] ?? 0 : 0;
   const localScreenShareActive = useMemo(
     () => Boolean(localParticipantIdentity && screenShares[localParticipantIdentity]),
     [localParticipantIdentity, screenShares],
@@ -213,6 +231,7 @@ export function App() {
       ),
     [activeCallChatId, primaryPaneMode, screenShares, selectedChat, watchingScreenShareIdentity],
   );
+  const showWsLoadingScreen = Boolean(currentUser) && !wsOnline;
   const watchingScreenShareName = useMemo(() => {
     if (!watchingScreenShareIdentity) {
       return null;
@@ -1193,6 +1212,7 @@ export function App() {
     }
 
     let cancelled = false;
+    let activeSocket: WebSocket | null = null;
 
     const connect = () => {
       if (cancelled) {
@@ -1200,15 +1220,20 @@ export function App() {
       }
 
       const socket = new WebSocket(`${WS_BASE}`);
+      activeSocket = socket;
       wsRef.current = socket;
       setWsOnline(false);
 
       socket.onopen = () => {
         if (!cancelled) {
+          console.log('[ws] connected');
           setWsOnline(true);
         }
       };
-      socket.onmessage = (event) => socketHandlerRef.current(event.data);
+      socket.onmessage = (event) => {
+        console.log('[ws] message', event.data);
+        socketHandlerRef.current(event.data);
+      };
       socket.onerror = () => {
         if (!cancelled) {
           setWsOnline(false);
@@ -1218,7 +1243,11 @@ export function App() {
         if (wsRef.current === socket) {
           wsRef.current = null;
         }
+        if (activeSocket === socket) {
+          activeSocket = null;
+        }
         if (!cancelled) {
+          console.log('[ws] disconnected');
           setWsOnline(false);
           reconnectRef.current = window.setTimeout(connect, RECONNECT_DELAY_MS);
         }
@@ -1233,10 +1262,13 @@ export function App() {
         window.clearTimeout(reconnectRef.current);
         reconnectRef.current = null;
       }
-      wsRef.current?.close();
-      wsRef.current = null;
+      if (wsRef.current === activeSocket) {
+        wsRef.current = null;
+      }
+      activeSocket?.close();
+      activeSocket = null;
     };
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   async function handleLogin(payload: LoginPayload) {
     const username = payload.username.trim();
@@ -1816,6 +1848,7 @@ export function App() {
           chats={filteredChats}
           displayByChatId={chatDisplayById}
           memberCounts={Object.fromEntries(Object.entries(membersByChat).map(([chatId, members]) => [Number(chatId), members.length]))}
+          waitingCallCounts={waitingCallCountsByChat}
           selectedChatId={selectedChatId}
           chatSearch={chatSearch}
           activeCallChatId={activeCallChatId}
@@ -1892,7 +1925,13 @@ export function App() {
                     <div>
                       <h1 className="chat-stage__title">{selectedChatDisplay?.name ?? selectedChat.name}</h1>
                       <p className="chat-stage__subtitle mb-0">
-                        {summarizeChat(selectedChat, selectedMembers)}
+                        {activeCallChatId === selectedChat.id
+                          ? summarizeChat(selectedChat, selectedMembers)
+                          : selectedWaitingCallCount > 0
+                            ? selectedWaitingCallCount === 1
+                              ? '1 участник ждёт в комнате звонка'
+                              : `${selectedWaitingCallCount} участников ждут в комнате звонка`
+                            : summarizeChat(selectedChat, selectedMembers)}
                       </p>
                     </div>
                   </div>
@@ -1980,36 +2019,36 @@ export function App() {
             </p>
           </div>
 
-          <div className="call-status card-shell mb-3">
-            <div className="d-flex justify-content-between align-items-center gap-3">
-              <span>Демонстрация экрана</span>
-              <span className={`status-pill ${LIVEKIT_URL ? 'status-pill-online' : 'status-pill-offline'}`}>
-                {localScreenShareActive ? 'Идёт трансляция' : LIVEKIT_URL ? 'Готово' : 'Недоступно'}
-              </span>
-            </div>
-            <button
-              className={`btn mt-3 w-100 ${localScreenShareActive ? 'btn-outline-danger' : 'btn-brand'}`}
-              type="button"
-              onClick={() => void toggleScreenShare()}
-              disabled={screenShareBusy || activeCallChatId !== selectedChat.id || !LIVEKIT_URL}
-            >
-              <i className={`bi ${localScreenShareActive ? 'bi-display-fill' : 'bi-cast'} me-2`} />
-              {screenShareBusy
-                ? 'Открываем выбор окна...'
-                : localScreenShareActive
-                  ? 'Остановить демку'
-                  : 'Включить демку'}
-            </button>
-            <small className="text-secondary d-block mt-2">
-              {LIVEKIT_URL
-                ? activeCallChatId === selectedChat.id
+          {activeCallChatId === selectedChat.id ? (
+            <div className="call-status card-shell mb-3">
+              <div className="d-flex justify-content-between align-items-center gap-3">
+                <span>Демонстрация экрана</span>
+                <span className={`status-pill ${LIVEKIT_URL ? 'status-pill-online' : 'status-pill-offline'}`}>
+                  {localScreenShareActive ? 'Идёт трансляция' : LIVEKIT_URL ? 'Готово' : 'Недоступно'}
+                </span>
+              </div>
+              <button
+                className={`btn mt-3 w-100 ${localScreenShareActive ? 'btn-outline-danger' : 'btn-brand'}`}
+                type="button"
+                onClick={() => void toggleScreenShare()}
+                disabled={screenShareBusy || activeCallChatId !== selectedChat.id || !LIVEKIT_URL}
+              >
+                <i className={`bi ${localScreenShareActive ? 'bi-display-fill' : 'bi-cast'} me-2`} />
+                {screenShareBusy
+                  ? 'Открываем выбор окна...'
+                  : localScreenShareActive
+                    ? 'Остановить демку'
+                    : 'Включить демку'}
+              </button>
+              <small className="text-secondary d-block mt-2">
+                {LIVEKIT_URL
                   ? localScreenShareActive
                     ? 'После остановки кнопка "Смотреть" исчезнет у остальных участников.'
                     : 'Браузер откроет системное окно выбора экрана или приложения.'
-                  : 'Сначала войдите в звонок этой комнаты, затем можно включить демку.'
-                : 'Укажите VITE_LIVEKIT_URL, чтобы включить аудиосоединение.'}
-            </small>
-          </div>
+                  : 'Укажите VITE_LIVEKIT_URL, чтобы включить аудиосоединение.'}
+              </small>
+            </div>
+          ) : null}
 
           <div className="participant-list">
             {selectedCallMembers.map((member) => {
@@ -2172,6 +2211,18 @@ export function App() {
           onSubmit={submitProfileSettings}
           onLogout={handleLogout}
         />
+      ) : null}
+      {showWsLoadingScreen ? (
+        <div className="ws-loading-overlay" role="status" aria-live="polite" aria-busy="true">
+          <div className="ws-loading-card">
+            <p className="eyebrow mb-2">Realtime</p>
+            <div className="spinner-border text-warning ws-loading-card__spinner" />
+            <h2 className="ws-loading-card__title">Подключаемся к websocket</h2>
+            <p className="ws-loading-card__text mb-0">
+              {wsRef.current ? 'Соединение потеряно, переподключаем чат.' : 'Готовим живое соединение для чатов и звонков.'}
+            </p>
+          </div>
+        </div>
       ) : null}
     </div>
   );

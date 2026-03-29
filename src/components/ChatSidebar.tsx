@@ -5,6 +5,7 @@ interface ChatSidebarProps {
   chats: Chat[];
   displayByChatId: Record<number, { name: string; avatarUrl?: string | null }>;
   memberCounts: Record<number, number>;
+  waitingCallCounts: Record<number, number>;
   selectedChatId: number | null;
   chatSearch: string;
   activeCallChatId: number | null;
@@ -16,6 +17,7 @@ export function ChatSidebar({
   chats,
   displayByChatId,
   memberCounts,
+  waitingCallCounts,
   selectedChatId,
   chatSearch,
   activeCallChatId,
@@ -39,8 +41,14 @@ export function ChatSidebar({
           const display = displayByChatId[chat.id] ?? { name: chat.name, avatarUrl: chat.avatar_url };
           const isSelected = chat.id === selectedChatId;
           const hasActiveCall = chat.id === activeCallChatId;
+          const waitingCount = waitingCallCounts[chat.id] ?? 0;
+          const hasWaitingCall = waitingCount > 0;
           const subtitle = hasActiveCall
             ? 'Идёт звонок'
+            : hasWaitingCall
+              ? waitingCount === 1
+                ? '1 участник ждёт в звонке'
+                : `${waitingCount} участников ждут в звонке`
             : chat.type === 'group'
               ? `${memberCounts[chat.id] ?? 0} участников`
               : null;
@@ -58,7 +66,7 @@ export function ChatSidebar({
                 </div>
                 {subtitle ? <small className="text-secondary">{subtitle}</small> : null}
               </div>
-              {hasActiveCall ? <i className="bi bi-broadcast-pin text-warning" /> : null}
+              {hasActiveCall || hasWaitingCall ? <i className="bi bi-broadcast-pin text-warning" /> : null}
             </button>
           );
         })}
