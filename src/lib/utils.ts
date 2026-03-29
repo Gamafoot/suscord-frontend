@@ -65,8 +65,9 @@ export function upsertChat(list: Chat[], chat: Chat): Chat[] {
 }
 
 export function upsertMessage(list: Message[], message: Message): Message[] {
+  const existing = message.id ? list.find((item) => item.id === message.id) : undefined;
   const next = list.filter((item) => item.id !== message.id);
-  next.push(message);
+  next.push(mergeMessage(existing, message));
   return sortMessages(next);
 }
 
@@ -164,13 +165,15 @@ export function normalizeChats(value: unknown): Chat[] {
 
 export function normalizeMessage(value: unknown): Message {
   const record = asRecord(value);
-  const author = normalizeUser(record.user_id);
+  const rawUser = record.user ?? record.user_id;
+  const author = normalizeUser(rawUser);
   const id = toNumber(record.id);
+  const userId = toNumber(record.user_id) || author.id;
   return {
     id,
     chat_id: toNumber(record.chat_id),
     user: author,
-    user_id: author.id || toNumber(record.user_id),
+    user_id: userId,
     type: toNonEmptyString(record.type, 'text'),
     content: toStringValue(record.content),
     created_at: toIsoString(record.created_at),
@@ -202,6 +205,26 @@ function normalizeAttachments(value: unknown, messageId: number): Message['attac
       mime_type: toNonEmptyString(record.mime_type, 'application/octet-stream'),
     };
   });
+}
+
+function mergeMessage(previous: Message | undefined, next: Message): Message {
+  if (!previous) {
+    return next;
+  }
+
+  const hasNextUser = next.user_id > 0 || next.user.id > 0;
+  const hasPreviousUser = previous.user_id > 0 || previous.user.id > 0;
+  const user = hasNextUser ? next.user : previous.user;
+  const user_id = next.user_id || previous.user_id;
+  const attachments = next.attachments.length ? next.attachments : previous.attachments;
+
+  return {
+    ...previous,
+    ...next,
+    user: hasNextUser || !hasPreviousUser ? user : previous.user,
+    user_id,
+    attachments,
+  };
 }
 
 function toNonEmptyString(value: unknown, fallback: string): string {

@@ -751,7 +751,10 @@ export function App() {
 
       switch (event.event) {
         case 'chat.message.created': {
-          const message = normalizeMessage(data);
+          const message = normalizeMessage({
+            ...data,
+            chat_id: data.chat_id ?? event.chat_id,
+          });
           if (!message.chat_id) {
             break;
           }
@@ -762,7 +765,10 @@ export function App() {
           break;
         }
         case 'chat.message.updated': {
-          const message = normalizeMessage(data);
+          const message = normalizeMessage({
+            ...data,
+            chat_id: data.chat_id ?? event.chat_id,
+          });
           if (!message.chat_id) {
             break;
           }
