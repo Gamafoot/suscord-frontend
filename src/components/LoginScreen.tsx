@@ -7,7 +7,7 @@ interface LoginScreenProps {
   onSubmit: (payload: LoginPayload) => Promise<void>;
 }
 
-export function LoginScreen({ busy, error: _error, onSubmit }: LoginScreenProps) {
+export function LoginScreen({ busy, error, onSubmit }: LoginScreenProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const trimmedUsername = username.trim();
@@ -33,6 +33,7 @@ export function LoginScreen({ busy, error: _error, onSubmit }: LoginScreenProps)
           <p className="login-subtitle">
             Войдите в существующий аккаунт. Регистрация намеренно отключена.
           </p>
+          {error ? <div className="login-error">{error}</div> : null}
         </div>
 
         <label className="form-label text-uppercase small fw-semibold text-secondary">Логин</label>

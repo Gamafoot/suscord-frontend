@@ -217,6 +217,11 @@ textarea {
   margin-bottom: 1rem;
 }
 
+.login-error {
+  color: var(--danger);
+  margin-bottom: 1rem;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 88px 340px minmax(0, 1fr);

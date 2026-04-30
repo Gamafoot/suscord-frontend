@@ -71,6 +71,7 @@ const SCREEN_SHARE_SOURCE = 'screen_share';
 export function App() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [createGroupBusy, setCreateGroupBusy] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
@@ -1274,12 +1275,12 @@ export function App() {
   async function handleLogin(payload: LoginPayload) {
     const username = payload.username.trim();
     if (username.length < 1 || username.length > 20) {
-      setAppError('Логин должен содержать от 1 до 20 символов');
+      setLoginError('Логин должен содержать от 1 до 20 символов');
       return;
     }
 
     setLoginBusy(true);
-    setAppError(null);
+    setLoginError(null);
     try {
       await api.login({ ...payload, username });
       const user = await loadCurrentUser();
@@ -1287,7 +1288,11 @@ export function App() {
         await loadChats();
       }
     } catch (error) {
-      setAppError(error instanceof Error ? error.message : 'Не удалось войти');
+      if (error instanceof ApiError && error.status === 401) {
+        setLoginError('Неверный логин или пароль');
+      } else {
+        setLoginError(error instanceof Error ? error.message : 'Не удалось войти');
+      }
     } finally {
       setLoginBusy(false);
     }
@@ -2234,7 +2239,7 @@ export function App() {
         path="/login"
         element={
           <PublicOnlyRoute checking={checkingAuth} currentUser={currentUser}>
-            <LoginScreen busy={loginBusy} error={appError} onSubmit={handleLogin} />
+            <LoginScreen busy={loginBusy} error={loginError} onSubmit={handleLogin} />
           </PublicOnlyRoute>
         }
       />
