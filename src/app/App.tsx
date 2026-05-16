@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { AudioCaptureOptions, Room } from 'livekit-client';
+import { LocalAudioTrack, Track, type AudioCaptureOptions, type Room } from 'livekit-client';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ProtectedRoute, PublicOnlyRoute } from './authGuards';
 import { ChatSidebar } from '../components/ChatSidebar';
@@ -14,6 +14,7 @@ import { Avatar } from '../components/Avatar';
 import { LoginScreen } from '../components/LoginScreen';
 import { ApiError, api } from '../lib/api';
 import { WS_BASE } from '../lib/config';
+import { RnnoiseAudioProcessor } from '../lib/rnnoiseProcessor';
 import {
   asRecord,
   buildCallRoomName,
@@ -40,7 +41,9 @@ const AUDIO_CAPTURE_OPTIONS: AudioCaptureOptions = {
   autoGainControl: true,
   echoCancellation: true,
   noiseSuppression: true,
+  sampleRate: 48_000,
 };
+const NOISE_SUPPRESSION_STORAGE_KEY = 'suscord:self-noise-suppression';
 
 interface LivekitAudioEntry {
   element: HTMLMediaElement;
@@ -96,6 +99,14 @@ export function App() {
   const [muteBusy, setMuteBusy] = useState(false);
   const [screenShareBusy, setScreenShareBusy] = useState(false);
   const [selfMuted, setSelfMuted] = useState(false);
+  const [selfNoiseSuppressionEnabled, setSelfNoiseSuppressionEnabled] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+
+    const storedValue = window.localStorage.getItem(NOISE_SUPPRESSION_STORAGE_KEY);
+    return storedValue === null ? true : storedValue === 'true';
+  });
   const [callError, setCallError] = useState<string | null>(null);
   const [localParticipantIdentity, setLocalParticipantIdentity] = useState<string | null>(null);
   const [screenShares, setScreenShares] = useState<Record<string, { isLocal: boolean; }>>({});
@@ -503,6 +514,51 @@ export function App() {
     }
   }, []);
 
+  const buildAudioCaptureOptions = useCallback((): AudioCaptureOptions => AUDIO_CAPTURE_OPTIONS, []);
+
+  const applyNoiseSuppressionToTrack = useCallback(
+    async (track: LocalAudioTrack, noiseSuppressionEnabled: boolean) => {
+      track.setAudioContext(livekitAudioContextRef.current ?? undefined);
+
+      if (noiseSuppressionEnabled) {
+        await track.setProcessor(new RnnoiseAudioProcessor());
+        return;
+      }
+
+      if (track.getProcessor()) {
+        await track.stopProcessor();
+      }
+    },
+    [],
+  );
+
+  const enableMicrophone = useCallback(
+    async (room: Room, noiseSuppressionEnabled: boolean) => {
+      try {
+        await room.localParticipant.setMicrophoneEnabled(true, buildAudioCaptureOptions());
+
+        const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+        const track = publication?.audioTrack;
+        if (!(track instanceof LocalAudioTrack)) {
+          return;
+        }
+
+        await applyNoiseSuppressionToTrack(track, noiseSuppressionEnabled);
+      } catch (error) {
+        if (!noiseSuppressionEnabled) {
+          throw error;
+        }
+
+        await room.localParticipant.setMicrophoneEnabled(true, AUDIO_CAPTURE_OPTIONS);
+        setSelfNoiseSuppressionEnabled(false);
+        throw new Error(
+          `RNNoise не удалось включить, микрофон запущен без шумодава: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
+      }
+    },
+    [applyNoiseSuppressionToTrack, buildAudioCaptureOptions],
+  );
+
   const connectLivekit = useCallback(
     async (chatId: number) => {
       if (!LIVEKIT_URL) {
@@ -516,7 +572,7 @@ export function App() {
         const roomName = buildCallRoomName(chatId);
         const { token } = await api.getCallToken(roomName);
         if (!livekitAudioContextRef.current || livekitAudioContextRef.current.state === 'closed') {
-          livekitAudioContextRef.current = new AudioContext();
+          livekitAudioContextRef.current = new AudioContext({ sampleRate: 48_000 });
         }
         if (livekitAudioContextRef.current.state === 'suspended') {
           await livekitAudioContextRef.current.resume();
@@ -630,7 +686,7 @@ export function App() {
         livekitRoomRef.current = room;
         await room.connect(LIVEKIT_URL, token);
         setLocalParticipantIdentity(room.localParticipant.identity);
-        await room.localParticipant.setMicrophoneEnabled(true, AUDIO_CAPTURE_OPTIONS);
+        await enableMicrophone(room, selfNoiseSuppressionEnabled);
         setSelfMuted(false);
         room.remoteParticipants.forEach((participant) => {
           participant.trackPublications.forEach((publication) => {
@@ -656,6 +712,7 @@ export function App() {
       registerScreenShare,
       sendDemoSocketEvent,
       unregisterScreenShare,
+      selfNoiseSuppressionEnabled,
     ],
   );
 
@@ -1066,6 +1123,10 @@ export function App() {
   }, [profileFile]);
 
   useEffect(() => {
+    window.localStorage.setItem(NOISE_SUPPRESSION_STORAGE_KEY, String(selfNoiseSuppressionEnabled));
+  }, [selfNoiseSuppressionEnabled]);
+
+  useEffect(() => {
     setCallVolumes((current) => {
       const next: Record<number, number> = {};
       selectedCallMembers.forEach((member) => {
@@ -1446,7 +1507,17 @@ export function App() {
     setMuteBusy(true);
     setCallError(null);
     try {
-      await room.localParticipant.setMicrophoneEnabled(!nextMuted, nextMuted ? undefined : AUDIO_CAPTURE_OPTIONS);
+      await room.localParticipant.setMicrophoneEnabled(
+        !nextMuted,
+        nextMuted ? undefined : buildAudioCaptureOptions(),
+      );
+      if (!nextMuted) {
+        const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+        const track = publication?.audioTrack;
+        if (track instanceof LocalAudioTrack) {
+          await applyNoiseSuppressionToTrack(track, selfNoiseSuppressionEnabled);
+        }
+      }
       setSelfMuted(nextMuted);
     } catch (error) {
       setCallError(error instanceof Error ? error.message : 'Не удалось изменить состояние микрофона');
@@ -1802,6 +1873,34 @@ export function App() {
     }
   }
 
+  async function toggleSelfNoiseSuppression() {
+    const nextEnabled = !selfNoiseSuppressionEnabled;
+    const room = livekitRoomRef.current;
+
+    if (!room) {
+      setSelfNoiseSuppressionEnabled(nextEnabled);
+      return;
+    }
+
+    const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+    const track = publication?.audioTrack;
+    if (!(track instanceof LocalAudioTrack)) {
+      setSelfNoiseSuppressionEnabled(nextEnabled);
+      return;
+    }
+
+    setMuteBusy(true);
+    setCallError(null);
+    try {
+      await applyNoiseSuppressionToTrack(track, nextEnabled);
+      setSelfNoiseSuppressionEnabled(nextEnabled);
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : 'Не удалось переключить шумодав');
+    } finally {
+      setMuteBusy(false);
+    }
+  }
+
   const chatLayout = (
     <div className={`app-shell ${shouldShowCallPanel ? 'app-shell-call' : ''} ${isWatchingScreenShare ? 'app-shell-screen' : ''}`}>
       <aside className="nav-rail">
@@ -2090,14 +2189,29 @@ export function App() {
                     {activeCallChatId === selectedChat.id ? (
                       <div className="participant-row__controls">
                         {member.id === currentUser?.id ? (
-                          <button
-                            className={`btn btn-sm ${selfMuted ? 'btn-outline-warning' : 'btn-outline-light'} align-self-start`}
-                            onClick={() => void toggleSelfMute()}
-                            disabled={muteBusy}
-                          >
-                            <i className={`bi ${selfMuted ? 'bi-mic-mute-fill' : 'bi-mic-fill'} me-2`} />
-                            {muteBusy ? 'Обновляем...' : selfMuted ? 'Включить микрофон' : 'Выключить микрофон'}
-                          </button>
+                          <>
+                            <button
+                              className={`btn btn-sm ${selfMuted ? 'btn-outline-warning' : 'btn-outline-light'} align-self-start`}
+                              onClick={() => void toggleSelfMute()}
+                              disabled={muteBusy}
+                            >
+                              <i className={`bi ${selfMuted ? 'bi-mic-mute-fill' : 'bi-mic-fill'} me-2`} />
+                              {muteBusy ? 'Обновляем...' : selfMuted ? 'Включить микрофон' : 'Выключить микрофон'}
+                            </button>
+                            <button
+                              className={`btn btn-sm ${selfNoiseSuppressionEnabled ? 'btn-brand' : 'btn-outline-light'} align-self-start`}
+                              type="button"
+                              onClick={() => void toggleSelfNoiseSuppression()}
+                              disabled={muteBusy}
+                            >
+                              <i className={`bi ${selfNoiseSuppressionEnabled ? 'bi-soundwave' : 'bi-soundwave'} me-2`} />
+                              {muteBusy
+                                ? 'Обновляем...'
+                                : selfNoiseSuppressionEnabled
+                                  ? 'Шумодав включён'
+                                  : 'Шумодав выключен'}
+                            </button>
+                          </>
                         ) : (
                           <label className="participant-volume" htmlFor={`participant-volume-${member.id}`}>
                             <div className="participant-volume__meta">
