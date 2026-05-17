@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { LocalAudioTrack, Track, type AudioCaptureOptions, type Room } from 'livekit-client';
+import type { AudioCaptureOptions, Room, Track } from 'livekit-client';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { ProtectedRoute, PublicOnlyRoute } from './authGuards';
 import { ChatSidebar } from '../components/ChatSidebar';
@@ -37,6 +37,7 @@ const ERROR_TTL_MS = 8_000;
 const RECONNECT_DELAY_MS = 3_000;
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL?.trim();
 const DEFAULT_REMOTE_VOLUME = 100;
+const MICROPHONE_SOURCE: Track.Source = 'microphone' as Track.Source;
 const AUDIO_CAPTURE_OPTIONS: AudioCaptureOptions = {
   autoGainControl: true,
   echoCancellation: true,
@@ -69,7 +70,26 @@ interface LivekitScreenEntry {
   track: LivekitVideoTrack;
 }
 
+interface ProcessableLocalAudioTrack {
+  setAudioContext: (audioContext: AudioContext | undefined) => void;
+  setProcessor: (processor: RnnoiseAudioProcessor) => Promise<void>;
+  stopProcessor: () => Promise<void>;
+  getProcessor: () => unknown;
+}
+
 const SCREEN_SHARE_SOURCE = 'screen_share';
+
+function isProcessableLocalAudioTrack(track: unknown): track is ProcessableLocalAudioTrack {
+  return typeof track === 'object' && track !== null
+    && 'setAudioContext' in track
+    && typeof track.setAudioContext === 'function'
+    && 'setProcessor' in track
+    && typeof track.setProcessor === 'function'
+    && 'stopProcessor' in track
+    && typeof track.stopProcessor === 'function'
+    && 'getProcessor' in track
+    && typeof track.getProcessor === 'function';
+}
 
 export function App() {
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -152,6 +172,7 @@ export function App() {
   const livekitScreenStageRef = useRef<HTMLDivElement | null>(null);
   const livekitScreenStageTrackRef = useRef<LivekitVideoTrack | null>(null);
   const livekitScreenStageElementRef = useRef<HTMLMediaElement | null>(null);
+  const screenShareFullscreenRef = useRef(false);
   const chatBodyRef = useRef<HTMLElement | null>(null);
   const lastAutoScrolledChatRef = useRef<number | null>(null);
   const lastMessageCountRef = useRef(0);
@@ -321,6 +342,19 @@ export function App() {
     }
   }, []);
 
+  const exitScreenShareFullscreen = useCallback(async () => {
+    const shell = livekitScreenShellRef.current;
+    const fullscreenElement = document.fullscreenElement;
+
+    if (!fullscreenElement) {
+      return;
+    }
+
+    if (fullscreenElement === shell || screenShareFullscreenRef.current) {
+      await document.exitFullscreen();
+    }
+  }, []);
+
   const registerScreenShare = useCallback((participantIdentity: string, isLocal: boolean, track?: LivekitVideoTrack) => {
     if (!participantIdentity) {
       return;
@@ -388,6 +422,7 @@ export function App() {
   );
 
   const clearLivekitScreenShares = useCallback(() => {
+    void exitScreenShareFullscreen().catch(() => undefined);
     clearLivekitScreenStage();
     livekitScreenEntriesRef.current.clear();
     setScreenShares({});
@@ -396,7 +431,7 @@ export function App() {
     setLocalParticipantIdentity(null);
     setScreenShareBusy(false);
     setScreenShareVersion((current) => current + 1);
-  }, [clearLivekitScreenStage]);
+  }, [clearLivekitScreenStage, exitScreenShareFullscreen]);
 
   const disconnectLivekit = useCallback(() => {
     livekitRoomRef.current?.disconnect();
@@ -517,7 +552,7 @@ export function App() {
   const buildAudioCaptureOptions = useCallback((): AudioCaptureOptions => AUDIO_CAPTURE_OPTIONS, []);
 
   const applyNoiseSuppressionToTrack = useCallback(
-    async (track: LocalAudioTrack, noiseSuppressionEnabled: boolean) => {
+    async (track: ProcessableLocalAudioTrack, noiseSuppressionEnabled: boolean) => {
       track.setAudioContext(livekitAudioContextRef.current ?? undefined);
 
       if (noiseSuppressionEnabled) {
@@ -537,9 +572,9 @@ export function App() {
       try {
         await room.localParticipant.setMicrophoneEnabled(true, buildAudioCaptureOptions());
 
-        const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+        const publication = room.localParticipant.getTrackPublication(MICROPHONE_SOURCE);
         const track = publication?.audioTrack;
-        if (!(track instanceof LocalAudioTrack)) {
+        if (!isProcessableLocalAudioTrack(track)) {
           return;
         }
 
@@ -1013,6 +1048,10 @@ export function App() {
   }, [screenShares, watchingScreenShareIdentity]);
 
   useEffect(() => {
+    screenShareFullscreenRef.current = screenShareFullscreen;
+  }, [screenShareFullscreen]);
+
+  useEffect(() => {
     const handleFullscreenChange = () => {
       const shell = livekitScreenShellRef.current;
       setScreenShareFullscreen(Boolean(shell && document.fullscreenElement === shell));
@@ -1031,10 +1070,10 @@ export function App() {
       return;
     }
 
-    if (document.fullscreenElement === livekitScreenShellRef.current) {
-      void document.exitFullscreen().catch(() => undefined);
+    if (screenShareFullscreen || document.fullscreenElement) {
+      void exitScreenShareFullscreen().catch(() => undefined);
     }
-  }, [isWatchingScreenShare]);
+  }, [exitScreenShareFullscreen, isWatchingScreenShare, screenShareFullscreen]);
 
   useEffect(() => {
     clearLivekitScreenStage();
@@ -1512,9 +1551,9 @@ export function App() {
         nextMuted ? undefined : buildAudioCaptureOptions(),
       );
       if (!nextMuted) {
-        const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+        const publication = room.localParticipant.getTrackPublication(MICROPHONE_SOURCE);
         const track = publication?.audioTrack;
-        if (track instanceof LocalAudioTrack) {
+        if (isProcessableLocalAudioTrack(track)) {
           await applyNoiseSuppressionToTrack(track, selfNoiseSuppressionEnabled);
         }
       }
@@ -1574,6 +1613,7 @@ export function App() {
   }
 
   function leaveScreenShareView() {
+    void exitScreenShareFullscreen().catch(() => undefined);
     setPrimaryPaneMode('chat');
   }
 
@@ -1882,9 +1922,9 @@ export function App() {
       return;
     }
 
-    const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+    const publication = room.localParticipant.getTrackPublication(MICROPHONE_SOURCE);
     const track = publication?.audioTrack;
-    if (!(track instanceof LocalAudioTrack)) {
+    if (!isProcessableLocalAudioTrack(track)) {
       setSelfNoiseSuppressionEnabled(nextEnabled);
       return;
     }
