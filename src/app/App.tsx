@@ -194,6 +194,21 @@ export function App() {
     () => (selectedChatId ? callMembersByChat[selectedChatId] ?? [] : []),
     [callMembersByChat, selectedChatId],
   );
+  const orderedSelectedCallMembers = useMemo(() => {
+    if (!currentUser?.id) {
+      return selectedCallMembers;
+    }
+
+    const selfMember = selectedCallMembers.find((member) => member.id === currentUser.id);
+    if (!selfMember) {
+      return selectedCallMembers;
+    }
+
+    return [
+      selfMember,
+      ...selectedCallMembers.filter((member) => member.id !== currentUser.id),
+    ];
+  }, [currentUser?.id, selectedCallMembers]);
   const waitingCallCountsByChat = useMemo(
     () =>
       Object.fromEntries(
@@ -2196,7 +2211,7 @@ export function App() {
           ) : null}
 
           <div className="participant-list">
-            {selectedCallMembers.map((member) => {
+            {orderedSelectedCallMembers.map((member) => {
               const memberIdentity =
                 member.id === currentUser?.id && localParticipantIdentity
                   ? localParticipantIdentity
@@ -2290,7 +2305,7 @@ export function App() {
                 </div>
               );
             })}
-            {!selectedCallMembers.length ? <div className="pane-empty pane-empty-compact">Пока никто не вошёл</div> : null}
+            {!orderedSelectedCallMembers.length ? <div className="pane-empty pane-empty-compact">Пока никто не вошёл</div> : null}
           </div>
         </aside>
       ) : null}
