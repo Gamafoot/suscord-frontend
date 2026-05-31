@@ -17,6 +17,60 @@ export function resolveMediaUrl(path?: string | null): string | undefined {
   }
 }
 
+export function getAttachmentName(fileUrl?: string | null, fileName?: string | null): string {
+  const normalizedFileName = fileName?.trim();
+  if (normalizedFileName) {
+    return normalizedFileName;
+  }
+
+  const resolvedUrl = resolveMediaUrl(fileUrl);
+  if (!resolvedUrl) {
+    return 'Файл';
+  }
+
+  try {
+    const { pathname } = new URL(resolvedUrl);
+    const lastSegment = pathname.split('/').filter(Boolean).pop();
+    if (!lastSegment) {
+      return 'Файл';
+    }
+
+    return decodeURIComponent(lastSegment);
+  } catch {
+    return 'Файл';
+  }
+}
+
+export function getAttachmentExtension(fileUrl?: string | null, fileName?: string | null): string {
+  const source = getAttachmentName(fileUrl, fileName);
+  const normalizedSource = source.split('?')[0].trim().toLowerCase();
+  const lastDotIndex = normalizedSource.lastIndexOf('.');
+
+  if (lastDotIndex <= 0 || lastDotIndex === normalizedSource.length - 1) {
+    return '';
+  }
+
+  return normalizedSource.slice(lastDotIndex + 1);
+}
+
+export function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return '';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = bytes;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  const maximumFractionDigits = size >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${size.toFixed(maximumFractionDigits)} ${units[unitIndex]}`;
+}
+
 export function getInitials(label?: string | null): string {
   const safeLabel = label?.trim() || 'Неизвестно';
 
@@ -201,6 +255,13 @@ function normalizeAttachments(value: unknown, messageId: number): Message['attac
       id: toNumber(record.id),
       message_id: toNumber(record.message_id) || messageId,
       file_url: toStringValue(record.file_url),
+      file_name: toNonEmptyString(
+        record.file_name ??
+          record.filename ??
+          record.original_name ??
+          record.name,
+        '',
+      ),
       file_size: toNumber(record.file_size),
       mime_type: toNonEmptyString(record.mime_type, 'application/octet-stream'),
     };

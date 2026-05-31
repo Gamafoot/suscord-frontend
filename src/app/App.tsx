@@ -2066,9 +2066,18 @@ export function App() {
           {selectedChat ? (
             <>
               <header className="chat-stage__header">
+                <button
+                  className="btn btn-outline-light chat-stage__leave"
+                  onClick={() => void handleLeaveChat()}
+                  disabled={leaveChatBusy}
+                  aria-label={leaveChatBusy ? 'Выходим из чата' : 'Покинуть чат'}
+                >
+                  <i className="bi bi-box-arrow-right" />
+                </button>
+
                 {canEditSelectedGroup ? (
                   <button className="chat-edit-trigger" type="button" onClick={openGroupEdit}>
-                    <Avatar name={selectedChat.name} url={selectedChat.avatar_url} accent="warm" />
+                    <Avatar name={selectedChat.name} url={selectedChat.avatar_url} size="md" accent="warm" />
                     <div className="chat-edit-trigger__content">
                       <h1 className="chat-stage__title">{selectedChat.name}</h1>
                       <p className="chat-stage__subtitle mb-0">
@@ -2080,8 +2089,13 @@ export function App() {
                     </span>
                   </button>
                 ) : (
-                  <div className="d-flex gap-3 align-items-center">
-                    <Avatar name={selectedChatDisplay?.name ?? selectedChat.name} url={selectedChatDisplay?.avatarUrl ?? selectedChat.avatar_url} accent="brand" />
+                  <div className="chat-stage__identity">
+                    <Avatar
+                      name={selectedChatDisplay?.name ?? selectedChat.name}
+                      url={selectedChatDisplay?.avatarUrl ?? selectedChat.avatar_url}
+                      size="md"
+                      accent="brand"
+                    />
                     <div>
                       <h1 className="chat-stage__title">{selectedChatDisplay?.name ?? selectedChat.name}</h1>
                       <p className="chat-stage__subtitle mb-0">
@@ -2104,14 +2118,6 @@ export function App() {
                       Пригласить
                     </button>
                   ) : null}
-                  <button
-                    className="btn btn-outline-light"
-                    onClick={() => void handleLeaveChat()}
-                    disabled={leaveChatBusy}
-                  >
-                    <i className="bi bi-box-arrow-right me-2" />
-                    {leaveChatBusy ? 'Выходим...' : 'Покинуть чат'}
-                  </button>
                   {activeCallChatId === selectedChat.id ? (
                     <button className="btn btn-outline-danger" onClick={() => void leaveCall()} disabled={callBusy || muteBusy}>
                       <i className="bi bi-telephone-x-fill me-2" />

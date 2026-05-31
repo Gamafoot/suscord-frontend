@@ -1,7 +1,11 @@
 import type { Chat, Message, User } from '../types';
-import { findUser, formatMessageDay, formatMessageTime, resolveMediaUrl } from '../lib/utils';
+import {
+  findUser,
+  formatMessageDay,
+  formatMessageTime,
+} from '../lib/utils';
 import { Avatar } from './Avatar';
-import { MediaImage } from './MediaImage';
+import { MessageAttachment } from './MessageAttachment';
 
 interface MessageListProps {
   chat: Chat;
@@ -141,20 +145,9 @@ export function MessageList({
 
                 {message.attachments.length ? (
                   <div className="attachment-grid mt-3">
-                    {message.attachments.map((attachment) => {
-                      const src = resolveMediaUrl(attachment.file_url);
-                      const isImage = attachment.mime_type.startsWith('image/');
-                      return isImage ? (
-                        <a key={attachment.id} href={src} className="attachment-card" target="_blank" rel="noreferrer">
-                          <MediaImage src={src} alt={attachment.mime_type} />
-                        </a>
-                      ) : (
-                        <a key={attachment.id} href={src} className="attachment-file" target="_blank" rel="noreferrer">
-                          <i className="bi bi-paperclip" />
-                          <span>{attachment.mime_type}</span>
-                        </a>
-                      );
-                    })}
+                    {message.attachments.map((attachment) => (
+                      <MessageAttachment key={attachment.id} attachment={attachment} />
+                    ))}
                   </div>
                 ) : null}
               </div>

@@ -6,4 +6,8 @@ export default defineConfig({
   server: {
     port: 5173,
   },
+  build: {
+    // RNNoise is loaded through a separate lazy chunk and is intentionally large.
+    chunkSizeWarningLimit: 6000,
+  },
 });

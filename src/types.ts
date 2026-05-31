@@ -17,6 +17,7 @@ export interface Attachment {
   id: number;
   message_id: number;
   file_url: string;
+  file_name: string;
   file_size: number;
   mime_type: string;
 }
